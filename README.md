@@ -61,7 +61,7 @@ ssb
 ssb
 ```
 
-ssb 会把根目录直属的所有 HTML 作为入口，递归收集依赖，并以 `safe` 档位输出到 `./dist`。
+ssb 会把根目录直属的所有 HTML 作为入口，递归收集依赖，并以 `safe` 等级输出到 `./dist`。
 
 指定单个或多个入口：
 
@@ -81,7 +81,21 @@ ssb index.html --entry "pages/*.html"
 
 ## 压缩与混淆
 
-压缩档位为 `none`、`safe`、`aggressive`：
+需要把压缩和混淆设置为相同等级时，可以使用聚合参数：
+
+```bash
+ssb --optimize aggressive
+```
+
+它等价于 `--minify aggressive --obfuscate aggressive`。裸 `--optimize` 使用 `safe`，`--no-optimize` 同时把两者设置为 `none`。聚合参数先应用，具体参数随后覆盖，结果与参数书写顺序无关：
+
+```bash
+ssb --optimize aggressive --obfuscate safe --no-minify-css
+```
+
+上例最终为 HTML/JS 压缩 `aggressive`、CSS 压缩 `none`、JS 混淆 `safe`。注意 `--optimize safe` 会开启安全混淆，而项目默认配置仍然是“安全压缩、关闭混淆”。
+
+压缩等级为 `none`、`safe`、`aggressive`：
 
 ```bash
 ssb --minify safe
@@ -89,7 +103,7 @@ ssb --minify aggressive
 ssb --no-minify
 ```
 
-正向选项可以省略档位，省略时表示 `safe`：
+正向选项可以省略等级，省略时表示 `safe`：
 
 ```bash
 ssb --minify
@@ -98,7 +112,7 @@ ssb --minify-js
 ssb --minify-css
 ```
 
-即使选项紧邻入口，入口也不会被当成档位：
+即使选项紧邻入口，入口也不会被当成等级：
 
 ```bash
 ssb --minify-html index.html
@@ -110,11 +124,11 @@ ssb --minify-html index.html
 ssb --minify safe --minify-html none --minify-js aggressive
 ```
 
-全局档位先应用，分类型档位随后覆盖，与参数书写顺序无关。上例最终使用 HTML `none`、JavaScript `aggressive`、CSS `safe`。
+全局等级先应用，分类型等级随后覆盖，与参数书写顺序无关。上例最终使用 HTML `none`、JavaScript `aggressive`、CSS `safe`。
 
-各档位的含义：
+各等级的含义：
 
-| 档位 | HTML | JavaScript | CSS |
+| 等级 | HTML | JavaScript | CSS |
 | --- | --- | --- | --- |
 | `none` | 原样复制 | 原样复制 | 原样复制 |
 | `safe` | 保守折叠空白、删除普通注释 | 紧凑输出、删除普通注释，不优化表达式或改名 | clean-css level 1 |
@@ -124,6 +138,7 @@ ssb --minify safe --minify-html none --minify-js aggressive
 
 ```bash
 ssb --obfuscate
+ssb --obfuscate none
 ssb --obfuscate safe
 ssb --obfuscate aggressive
 ssb --no-obfuscate
@@ -177,7 +192,7 @@ ssb --target es5 --no-minify
 
 - `import`、`export`、dynamic import 和 `import.meta` 会保留。
 - `Promise`、`fetch`、`Map`、`Set` 等运行时 API 不会自动补充。
-- `onclick` 等 HTML 事件属性保持原样，避免改变其特殊作用域和顶层 `return` 语义。
+- `onclick` 等 HTML 事件属性最多只做文本压缩，不执行混淆或 ES5 转译，避免改变其特殊作用域和顶层 `return` 语义。
 - 因此包含 ESM 的产物并不代表可以直接在 IE11 中运行。
 
 ## 文件收集规则
@@ -243,35 +258,37 @@ Arguments:
   -r, --root <dir>                源码根目录（默认：当前目录）
   -e, --entry <file-or-glob>      添加 HTML 入口，可重复使用
   -c, --config <file>             指定 ssb.config.* 文件
-  --no-config                     禁用配置文件自动发现
+  --no-config                     禁用配置文件自动发现和加载（默认：启用）
 
 输出选项：
   -o, --out-dir <dir>             输出目录（默认：<root>/dist）
 
 代码处理选项：
-  --minify [level]                设置全部压缩档位（省略档位：safe）
-  --no-minify                     禁用全部压缩
-  --minify-html [level]           设置 HTML 压缩档位（省略档位：safe）
+  --optimize [level]              同时设置压缩和混淆等级（省略：safe）
+  --no-optimize                   同时禁用压缩和混淆，等价于 --optimize=none
+  --minify [level]                设置全部压缩等级（省略：safe）
+  --no-minify                     禁用全部压缩，等价于 --minify=none
+  --minify-html [level]           设置 HTML 压缩等级（省略：safe）
   --no-minify-html                禁用 HTML 压缩
-  --minify-js [level]             设置 JavaScript 压缩档位（省略档位：safe）
+  --minify-js [level]             设置 JavaScript 压缩等级（省略：safe）
   --no-minify-js                  禁用 JavaScript 压缩
-  --minify-css [level]            设置 CSS 压缩档位（省略档位：safe）
+  --minify-css [level]            设置 CSS 压缩等级（省略：safe）
   --no-minify-css                 禁用 CSS 压缩
-  --target <target>              JavaScript 输出目标：modern 或 es5（默认：modern）
-  --obfuscate [level]             启用 JS 混淆（省略档位：safe）
-  --no-obfuscate                  禁用 JavaScript 混淆
-  --keep-name <name>              保留标识符名称，可重复使用
+  --obfuscate [level]             设置 JS 混淆等级（省略：safe；默认：none）
+  --no-obfuscate                  禁用 JavaScript 混淆，等价于 --obfuscate=none
+  --target <target>               JavaScript 输出目标：modern 或 es5（默认：modern）
+  --keep-name <name>              混淆时保留标识符名称，可重复使用
 
 资源选择选项：
-  --include <glob>                强制包含动态资源，可重复使用
-  --exclude <glob>                完全排除资源，可重复使用
-  --no-transform <glob>           包含文件但不转译、压缩或混淆，可重复使用
+  --exclude <glob>                从站点包中完全排除文件，可重复使用（默认：无）
+  --include <glob>                强制加入静态分析无法发现的资源，可重复使用（默认：无）
+  --no-transform <glob>           打包文件但保持内容不变，可重复使用（默认：无）
 
 报告选项：
-  --dry-run                       完整预演，但不写入输出目录
-  --list-files                    显示最终包含的文件
-  --json                          以 JSON 输出构建结果
-  --quiet                         成功时不输出信息
+  --dry-run                       完整预演构建但不写入文件（默认：关闭）
+  --list-files                    输出最终打包文件列表（默认：关闭）
+  --quiet                         成功时不输出任何内容（默认：关闭）
+  --json                          以 JSON 输出构建结果（默认：可读文本）
 ```
 
 `--dry-run` 会执行完整的依赖分析和文本转换验证，但不会创建、替换或清理输出目录：
@@ -333,6 +350,13 @@ export default defineConfig({
 });
 ```
 
+转译也可以使用字符串简写：
+
+```ts
+defineConfig({ transpile: 'modern' }); // 保持现代语法，默认值
+defineConfig({ transpile: 'es5' });    // 使用 Babel 降级语法
+```
+
 混淆也可以使用字符串简写：
 
 ```ts
@@ -341,7 +365,7 @@ defineConfig({ obfuscate: 'safe' });       // 只改局部标识符
 defineConfig({ obfuscate: 'aggressive' }); // 允许改顶层标识符
 ```
 
-详细对象省略 `level` 时只合并 `exclude` 和 `reservedNames`，不会改变已有混淆档位。因此 CLI 的 `--keep-name` 可以追加名称而不会意外开启混淆。
+详细对象省略 `level` 时只合并 `exclude` 和 `reservedNames`，不会改变已有混淆等级。因此 CLI 的 `--keep-name` 可以追加名称而不会意外开启混淆。
 
 配置优先级：
 
@@ -350,11 +374,11 @@ defineConfig({ obfuscate: 'aggressive' }); // 允许改顶层标识符
 ```
 
 - 配置文件中的 `root`、`outDir` 相对配置文件目录解析；CLI 路径相对当前工作目录解析。
-- `entries` 采用高优先级整体替换；`include`、`exclude`、`transformExclude` 跨层累加。
+- `entries` 采用高优先级整体替换；其余规则数组跨层累加并去重，包括 `include`、`exclude`、`transformExclude` 以及三个处理器各自的 `exclude`。
 - `minify` 先应用全局 `level`，再应用 `html`、`js`、`css` 分项值。
 - `obfuscate.level` 使用 `none`、`safe`、`aggressive`，默认是 `none`，不再使用单独的 `enabled` 开关。
 - `obfuscate.reservedNames` 和 `--keep-name` 累加并去重。
-- `transpile.target` 默认为 `modern`；设为 `es5` 时启用 Babel，`transpile.exclude` 只跳过转译。
+- `transpile.target` 默认为 `modern`；设为 `es5` 时启用 Babel，`transpile.exclude` 只跳过转译。`transpile.enabled` 不受支持。
 - `transformExclude` 与 `--no-transform` 会同时追加到压缩、混淆和转译的排除列表。
 - 所有资源 glob 相对 root，并统一使用 `/` 分隔符。
 

@@ -100,6 +100,10 @@ function stringArray(value: unknown, label: string): string[] {
   return [...value];
 }
 
+function mergeRules(...layers: string[][]): string[] {
+  return [...new Set(layers.flat())];
+}
+
 function compressionLevel(value: unknown, label: string): CompressionLevel {
   if (value !== 'none' && value !== 'safe' && value !== 'aggressive') {
     throw new SsbError(`${label} 只能是 'none'、'safe' 或 'aggressive'。`);
@@ -127,7 +131,10 @@ function applyMinify(current: ResolvedMinifyOptions, input: CompressionLevel | M
     const level = compressionLevel(input, 'minify');
     return { ...current, level, html: level, js: level, css: level };
   }
-  if (!isPlainObject(input)) throw new SsbError('minify 必须是压缩档位或对象。');
+  if (!isPlainObject(input)) throw new SsbError('minify 必须是压缩等级或对象。');
+  if ('enabled' in input) {
+    throw new SsbError("minify.enabled 已移除，请使用 minify.level: 'none' | 'safe' | 'aggressive'。");
+  }
   let next = { ...current };
   if (input.level !== undefined) {
     const level = compressionLevel(input.level, 'minify.level');
@@ -136,7 +143,9 @@ function applyMinify(current: ResolvedMinifyOptions, input: CompressionLevel | M
   if (input.html !== undefined) next.html = compressionLevel(input.html, 'minify.html');
   if (input.js !== undefined) next.js = compressionLevel(input.js, 'minify.js');
   if (input.css !== undefined) next.css = compressionLevel(input.css, 'minify.css');
-  if (input.exclude !== undefined) next.exclude = stringArray(input.exclude, 'minify.exclude');
+  if (input.exclude !== undefined) {
+    next.exclude = mergeRules(current.exclude, stringArray(input.exclude, 'minify.exclude'));
+  }
   return next;
 }
 
@@ -146,22 +155,39 @@ function applyObfuscate(
 ): ResolvedObfuscateOptions {
   if (input === undefined) return current;
   if (typeof input === 'string') return { ...current, level: obfuscationLevel(input, 'obfuscate') };
-  if (!isPlainObject(input)) throw new SsbError('obfuscate 必须是混淆档位或对象。');
+  if (!isPlainObject(input)) throw new SsbError('obfuscate 必须是混淆等级或对象。');
+  if ('enabled' in input || 'mode' in input) {
+    throw new SsbError("obfuscate.enabled/mode 已移除，请使用 obfuscate.level: 'none' | 'safe' | 'aggressive'。");
+  }
   const next = { ...current };
   if (input.level !== undefined) next.level = obfuscationLevel(input.level, 'obfuscate.level');
-  if (input.exclude !== undefined) next.exclude = stringArray(input.exclude, 'obfuscate.exclude');
+  if (input.exclude !== undefined) {
+    next.exclude = mergeRules(current.exclude, stringArray(input.exclude, 'obfuscate.exclude'));
+  }
   if (input.reservedNames !== undefined) {
     next.reservedNames = [...new Set([...current.reservedNames, ...stringArray(input.reservedNames, 'obfuscate.reservedNames')])];
   }
   return next;
 }
 
-function applyTranspile(current: ResolvedTranspileOptions, input: TranspileOptions | undefined): ResolvedTranspileOptions {
+function applyTranspile(
+  current: ResolvedTranspileOptions,
+  input: JavaScriptTarget | TranspileOptions | undefined,
+): ResolvedTranspileOptions {
   if (input === undefined) return current;
-  if (!isPlainObject(input)) throw new SsbError('transpile 必须是对象。');
+  if (typeof input === 'string') {
+    return { ...current, target: javaScriptTarget(input, 'transpile') };
+  }
+  if (!isPlainObject(input)) throw new SsbError("transpile 必须是 'modern'、'es5' 或对象。");
+  if ('enabled' in input) {
+    throw new SsbError("transpile.enabled 已移除，请使用 transpile.target: 'modern' | 'es5'。");
+  }
   return {
     target: input.target === undefined ? current.target : javaScriptTarget(input.target, 'transpile.target'),
-    exclude: input.exclude === undefined ? current.exclude : stringArray(input.exclude, 'transpile.exclude'),
+    exclude:
+      input.exclude === undefined
+        ? current.exclude
+        : mergeRules(current.exclude, stringArray(input.exclude, 'transpile.exclude')),
   };
 }
 
@@ -177,12 +203,19 @@ function mergeConfig(
   const entries = overrides.entries === undefined
     ? stringArray(fileConfig.entries, 'entries')
     : stringArray(overrides.entries, 'entries');
-  const include = [...stringArray(fileConfig.include, 'include'), ...stringArray(overrides.include, 'include')];
-  const exclude = [...DEFAULT_EXCLUDES, ...stringArray(fileConfig.exclude, 'exclude'), ...stringArray(overrides.exclude, 'exclude')];
-  const transformExclude = [
-    ...stringArray(fileConfig.transformExclude, 'transformExclude'),
-    ...stringArray(overrides.transformExclude, 'transformExclude'),
-  ];
+  const include = mergeRules(
+    stringArray(fileConfig.include, 'include'),
+    stringArray(overrides.include, 'include'),
+  );
+  const exclude = mergeRules(
+    [...DEFAULT_EXCLUDES],
+    stringArray(fileConfig.exclude, 'exclude'),
+    stringArray(overrides.exclude, 'exclude'),
+  );
+  const transformExclude = mergeRules(
+    stringArray(fileConfig.transformExclude, 'transformExclude'),
+    stringArray(overrides.transformExclude, 'transformExclude'),
+  );
 
   let minify: ResolvedMinifyOptions = { level: 'safe', html: 'safe', js: 'safe', css: 'safe', exclude: [] };
   minify = applyMinify(minify, fileConfig.minify);
@@ -196,9 +229,9 @@ function mergeConfig(
   transpile = applyTranspile(transpile, fileConfig.transpile);
   transpile = applyTranspile(transpile, overrides.transpile);
 
-  minify.exclude = [...new Set([...minify.exclude, ...transformExclude])];
-  obfuscate.exclude = [...new Set([...obfuscate.exclude, ...transformExclude])];
-  transpile.exclude = [...new Set([...transpile.exclude, ...transformExclude])];
+  minify.exclude = mergeRules(minify.exclude, transformExclude);
+  obfuscate.exclude = mergeRules(obfuscate.exclude, transformExclude);
+  transpile.exclude = mergeRules(transpile.exclude, transformExclude);
 
   const resolved: ResolvedConfig = {
     cwd, root, entries, outDir, include, exclude, transformExclude, minify, obfuscate, transpile,

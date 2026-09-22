@@ -76,6 +76,14 @@ test('explicit CLI entries replace config entries and optional levels do not con
     normalizeOptionalLevels(['node', 'ssb', '--minify-html', 'index.html']),
     ['node', 'ssb', '--minify-html=safe', 'index.html'],
   );
+  assert.deepEqual(
+    normalizeOptionalLevels(['node', 'ssb', '--minify', 'custom-entry']),
+    ['node', 'ssb', '--minify=safe', 'custom-entry'],
+  );
+  assert.deepEqual(
+    normalizeOptionalLevels(['node', 'ssb', '--optimize', 'index.html']),
+    ['node', 'ssb', '--optimize=safe', 'index.html'],
+  );
   let received;
   await runCli(['node', 'ssb', '--minify-html', 'index.html', '--entry', 'pages/*.html'], {
     build: async (options) => {
@@ -106,6 +114,46 @@ test('maps global, per-type, obfuscation, and target CLI options independently',
   assert.deepEqual(received.minify, { level: 'none', js: 'aggressive' });
   assert.deepEqual(received.obfuscate, { level: 'none' });
   assert.deepEqual(received.transpile, { target: 'es5' });
+
+  await runCli(['node', 'ssb', '--obfuscate', 'none', 'index.html'], {
+    build: async (options) => {
+      received = options;
+      return {
+        dryRun: false, sourceDir: 'x', outDir: 'y', entryPaths: [], includedFiles: [],
+        files: { copied: 0, html: 0, js: 0, css: 0, obfuscated: 0, transpiled: 0 }, bytesBefore: 0, bytesAfter: 0,
+      };
+    },
+    write: () => undefined,
+  });
+  assert.deepEqual(received.obfuscate, { level: 'none' });
+
+  await runCli([
+    'node', 'ssb', '--obfuscate', 'safe', '--no-minify-css', '--optimize', 'aggressive', 'index.html',
+  ], {
+    build: async (options) => {
+      received = options;
+      return {
+        dryRun: false, sourceDir: 'x', outDir: 'y', entryPaths: [], includedFiles: [],
+        files: { copied: 0, html: 0, js: 0, css: 0, obfuscated: 0, transpiled: 0 }, bytesBefore: 0, bytesAfter: 0,
+      };
+    },
+    write: () => undefined,
+  });
+  assert.deepEqual(received.minify, { level: 'aggressive', css: 'none' });
+  assert.deepEqual(received.obfuscate, { level: 'safe' });
+
+  await runCli(['node', 'ssb', '--no-optimize', 'index.html'], {
+    build: async (options) => {
+      received = options;
+      return {
+        dryRun: false, sourceDir: 'x', outDir: 'y', entryPaths: [], includedFiles: [],
+        files: { copied: 0, html: 0, js: 0, css: 0, obfuscated: 0, transpiled: 0 }, bytesBefore: 0, bytesAfter: 0,
+      };
+    },
+    write: () => undefined,
+  });
+  assert.deepEqual(received.minify, { level: 'none' });
+  assert.deepEqual(received.obfuscate, { level: 'none' });
 });
 
 test('loads TypeScript config and lets programmatic options override entries and levels', async () => {
@@ -113,16 +161,23 @@ test('loads TypeScript config and lets programmatic options override entries and
     await mkdir(path.join(root, 'site'));
     await write(root, 'ssb.config.ts', `export default {
       root: './site', entries: ['from-config.html'], outDir: './release',
-      minify: { level: 'aggressive', html: 'none' },
-      obfuscate: 'safe',
-      transpile: { target: 'es5', exclude: ['vendor/**'] }
+      include: ['shared/**', 'config-only/**'],
+      exclude: ['shared.tmp', 'config.tmp'],
+      transformExclude: ['vendor/**'],
+      minify: { level: 'aggressive', html: 'none', exclude: ['generated/**'] },
+      obfuscate: { level: 'safe', exclude: ['vendor/**'], reservedNames: ['configApi'] },
+      transpile: { target: 'es5', exclude: ['legacy/**'] }
     };`);
     const loaded = await loadConfig({
       cwd: root,
       overrides: {
         entries: ['from-api.html'],
-        minify: { js: 'none' },
-        obfuscate: { reservedNames: ['publicApi'] },
+        include: ['shared/**', 'api-only/**'],
+        exclude: ['shared.tmp', 'api.tmp'],
+        transformExclude: ['vendor/**', 'raw/**'],
+        minify: { js: 'none', exclude: ['generated/**', 'raw-js/**'] },
+        obfuscate: { exclude: ['third-party/**'], reservedNames: ['configApi', 'publicApi'] },
+        transpile: { exclude: ['legacy/**', 'modern-only/**'] },
       },
     });
     assert.equal(loaded.root, path.join(root, 'site'));
@@ -133,8 +188,38 @@ test('loads TypeScript config and lets programmatic options override entries and
       { html: 'none', js: 'none', css: 'aggressive' },
     );
     assert.equal(loaded.obfuscate.level, 'safe');
-    assert.deepEqual(loaded.obfuscate.reservedNames, ['publicApi']);
-    assert.deepEqual(loaded.transpile, { target: 'es5', exclude: ['vendor/**'] });
+    assert.deepEqual(loaded.include, ['shared/**', 'config-only/**', 'api-only/**']);
+    assert.equal(loaded.exclude.filter((value) => value === 'shared.tmp').length, 1);
+    assert.ok(loaded.exclude.includes('config.tmp'));
+    assert.ok(loaded.exclude.includes('api.tmp'));
+    assert.deepEqual(loaded.transformExclude, ['vendor/**', 'raw/**']);
+    assert.deepEqual(loaded.minify.exclude, ['generated/**', 'raw-js/**', 'vendor/**', 'raw/**']);
+    assert.deepEqual(loaded.obfuscate.exclude, ['vendor/**', 'third-party/**', 'raw/**']);
+    assert.deepEqual(loaded.obfuscate.reservedNames, ['configApi', 'publicApi']);
+    assert.deepEqual(loaded.transpile, {
+      target: 'es5',
+      exclude: ['legacy/**', 'modern-only/**', 'vendor/**', 'raw/**'],
+    });
+
+    const shorthand = await loadConfig({ cwd: root, overrides: { transpile: 'modern' } });
+    assert.equal(shorthand.transpile.target, 'modern');
+  });
+});
+
+test('rejects removed enabled and mode configuration fields', async () => {
+  await withTemporaryDirectory(async (root) => {
+    await assert.rejects(
+      () => loadConfig({ cwd: root, configFile: false, overrides: { minify: { enabled: false } } }),
+      /minify\.enabled 已移除/,
+    );
+    await assert.rejects(
+      () => loadConfig({ cwd: root, configFile: false, overrides: { obfuscate: { mode: 'safe' } } }),
+      /obfuscate\.enabled\/mode 已移除/,
+    );
+    await assert.rejects(
+      () => loadConfig({ cwd: root, configFile: false, overrides: { transpile: { enabled: true } } }),
+      /transpile\.enabled 已移除/,
+    );
   });
 });
 
@@ -159,6 +244,22 @@ test('keeps minification and obfuscation independent', async () => {
     const context = vm.createContext({});
     vm.runInContext(output, context);
     assert.equal(context.result, 3);
+  });
+});
+
+test('uses the effective per-file obfuscation level for excluded files', async () => {
+  await withTemporaryDirectory(async (root) => {
+    const site = path.join(root, 'site');
+    await write(site, 'index.html', '<script src="main.js"></script>');
+    await write(site, 'main.js', 'function publicFunction(value) { return value + 1; } globalThis.result = publicFunction(2);');
+    const result = await build({
+      cwd: root,
+      root: site,
+      minify: { js: 'aggressive' },
+      obfuscate: { level: 'aggressive', exclude: ['main.js'] },
+    });
+    const output = await readFile(path.join(result.outDir, 'main.js'), 'utf8');
+    assert.match(output, /publicFunction/);
   });
 });
 
@@ -280,6 +381,7 @@ test('supports help, version, defaults, JSON output, and rejects conflicting opt
   await runCli(['node', 'ssb', '--help'], { write: (text) => { stdout += text; } });
   assert.match(stdout, /Usage: ssb/);
   assert.match(stdout, /--minify-html \[level\]/);
+  assert.match(stdout, /--optimize \[level\]/);
   assert.match(stdout, /-v, --version/);
 
   stdout = '';
@@ -294,8 +396,16 @@ test('supports help, version, defaults, JSON output, and rejects conflicting opt
     /不能同时使用/,
   );
   await assert.rejects(
+    () => runCli(['node', 'ssb', '--optimize', 'safe', '--no-optimize'], { write: () => undefined }),
+    /不能同时使用/,
+  );
+  await assert.rejects(
     () => runCli(['node', 'ssb', '--target', 'es2015'], { write: () => undefined }),
     /只能是 'modern' 或 'es5'/,
+  );
+  await assert.rejects(
+    () => runCli(['node', 'ssb', '--json', '--list-files'], { write: () => undefined }),
+    /不能同时使用/,
   );
 });
 

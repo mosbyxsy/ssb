@@ -6,7 +6,7 @@ import { minify as minifyHtml } from 'html-minifier-terser';
 import { minify as minifyJavaScript } from 'terser';
 import { SsbError } from './errors.js';
 import { matchesAny } from './paths.js';
-import type { CompressionLevel, ResolvedConfig } from './types.js';
+import type { CompressionLevel, ObfuscationLevel, ResolvedConfig } from './types.js';
 
 export type ProcessedKind = 'copied' | 'html' | 'js' | 'css';
 
@@ -21,8 +21,8 @@ function levelFor(relativePath: string, level: CompressionLevel, config: Resolve
   return matchesAny(relativePath, config.minify.exclude) ? 'none' : level;
 }
 
-function canObfuscate(relativePath: string, config: ResolvedConfig): boolean {
-  return config.obfuscate.level !== 'none' && !matchesAny(relativePath, config.obfuscate.exclude);
+function obfuscationLevelFor(relativePath: string, config: ResolvedConfig): ObfuscationLevel {
+  return matchesAny(relativePath, config.obfuscate.exclude) ? 'none' : config.obfuscate.level;
 }
 
 function canTranspile(relativePath: string, config: ResolvedConfig): boolean {
@@ -52,21 +52,22 @@ async function transpileJavaScriptToEs5(source: string): Promise<string> {
 
 async function transformJavaScript(
   source: string,
-  level: CompressionLevel,
-  obfuscate: boolean,
-  aggressiveObfuscation: boolean,
+  minifyLevel: CompressionLevel,
+  obfuscationLevel: ObfuscationLevel,
   transpile: boolean,
   reservedNames: string[],
   inlineEvent: boolean,
 ): Promise<string> {
+  if (minifyLevel === 'none' && obfuscationLevel === 'none' && !transpile) return source;
+  const aggressiveCompression = minifyLevel === 'aggressive';
+  const aggressiveObfuscation = obfuscationLevel === 'aggressive';
   const input = transpile && !inlineEvent ? await transpileJavaScriptToEs5(source) : source;
-  if (level === 'none' && !obfuscate) return input;
-  const aggressive = level === 'aggressive';
+  if (minifyLevel === 'none' && obfuscationLevel === 'none') return input;
   const ecma = transpile ? 5 : 2020;
   const result = await minifyJavaScript(input, {
-    compress: aggressive ? { passes: 3, unsafe: false } : false,
+    compress: aggressiveCompression ? { passes: 3, unsafe: false } : false,
     ecma,
-    mangle: obfuscate && !inlineEvent
+    mangle: obfuscationLevel !== 'none' && !inlineEvent
       ? {
           eval: false,
           keep_classnames: !aggressiveObfuscation,
@@ -104,10 +105,10 @@ async function transformHtml(source: string, relativePath: string, config: Resol
   const htmlLevel = levelFor(relativePath, config.minify.html, config);
   const jsLevel = levelFor(relativePath, config.minify.js, config);
   const cssLevel = levelFor(relativePath, config.minify.css, config);
-  const obfuscate = canObfuscate(relativePath, config);
+  const obfuscationLevel = obfuscationLevelFor(relativePath, config);
   const transpile = canTranspile(relativePath, config);
   const aggressiveHtml = htmlLevel === 'aggressive';
-  if (htmlLevel === 'none' && jsLevel === 'none' && cssLevel === 'none' && !obfuscate && !transpile) return source;
+  if (htmlLevel === 'none' && jsLevel === 'none' && cssLevel === 'none' && obfuscationLevel === 'none' && !transpile) return source;
 
   return minifyHtml(source, {
     collapseWhitespace: htmlLevel !== 'none',
@@ -115,13 +116,12 @@ async function transformHtml(source: string, relativePath: string, config: Resol
     continueOnParseError: false,
     keepClosingSlash: true,
     minifyCSS: cssLevel === 'none' ? false : cleanCssOptions(cssLevel),
-    minifyJS: jsLevel === 'none' && !obfuscate && !transpile
+    minifyJS: jsLevel === 'none' && obfuscationLevel === 'none' && !transpile
       ? false
       : async (text: string, inline: boolean) => transformJavaScript(
           text,
           jsLevel,
-          obfuscate && !inline,
-          config.obfuscate.level === 'aggressive' && !inline,
+          inline ? 'none' : obfuscationLevel,
           transpile,
           config.obfuscate.reservedNames,
           inline,
@@ -144,18 +144,18 @@ async function transformHtml(source: string, relativePath: string, config: Resol
 
 export async function processTextFile(source: string, relativePath: string, config: ResolvedConfig): Promise<ProcessedText> {
   const extension = path.posix.extname(relativePath).toLowerCase();
-  const obfuscate = canObfuscate(relativePath, config);
+  const obfuscationLevel = obfuscationLevelFor(relativePath, config);
   if (extension === '.html' || extension === '.htm') {
     const transpile = canTranspile(relativePath, config);
     const active = levelFor(relativePath, config.minify.html, config) !== 'none'
       || levelFor(relativePath, config.minify.js, config) !== 'none'
       || levelFor(relativePath, config.minify.css, config) !== 'none'
-      || obfuscate
+      || obfuscationLevel !== 'none'
       || transpile;
     return {
       content: await transformHtml(source, relativePath, config),
       kind: active ? 'html' : 'copied',
-      obfuscated: obfuscate,
+      obfuscated: obfuscationLevel !== 'none',
       transpiled: transpile,
     };
   }
@@ -166,14 +166,13 @@ export async function processTextFile(source: string, relativePath: string, conf
       content: await transformJavaScript(
         source,
         level,
-        obfuscate,
-        config.obfuscate.level === 'aggressive',
+        obfuscationLevel,
         transpile,
         config.obfuscate.reservedNames,
         false,
       ),
-      kind: level !== 'none' || obfuscate || transpile ? 'js' : 'copied',
-      obfuscated: obfuscate,
+      kind: level !== 'none' || obfuscationLevel !== 'none' || transpile ? 'js' : 'copied',
+      obfuscated: obfuscationLevel !== 'none',
       transpiled: transpile,
     };
   }

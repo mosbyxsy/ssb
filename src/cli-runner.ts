@@ -21,6 +21,7 @@ interface CliOptions {
   entry?: string[];
   config?: string | false;
   outDir?: string;
+  optimize?: CompressionLevel | false;
   minify?: CompressionLevel | false;
   minifyHtml?: CompressionLevel | false;
   minifyJs?: CompressionLevel | false;
@@ -39,8 +40,9 @@ interface CliOptions {
 
 const packageMetadata = createRequire(import.meta.url)('../package.json') as { version: string };
 const COMPRESSION_LEVELS = new Set(['none', 'safe', 'aggressive']);
-const OBFUSCATION_LEVELS = new Set(['safe', 'aggressive']);
+const OBFUSCATION_LEVELS = new Set(['none', 'safe', 'aggressive']);
 const OPTIONAL_LEVEL_FLAGS = new Map([
+  ['--optimize', COMPRESSION_LEVELS],
   ['--minify', COMPRESSION_LEVELS],
   ['--minify-html', COMPRESSION_LEVELS],
   ['--minify-js', COMPRESSION_LEVELS],
@@ -64,7 +66,7 @@ function parseCompressionLevel(value: string): CompressionLevel {
 }
 
 function parseObfuscationLevel(value: string): ObfuscationLevel {
-  if (!OBFUSCATION_LEVELS.has(value)) throw new InvalidArgumentError("只能是 'safe' 或 'aggressive'");
+  if (!OBFUSCATION_LEVELS.has(value)) throw new InvalidArgumentError("只能是 'none'、'safe' 或 'aggressive'");
   return value as ObfuscationLevel;
 }
 
@@ -75,15 +77,9 @@ function parseJavaScriptTarget(value: string): JavaScriptTarget {
   return value;
 }
 
-function looksLikeHtmlEntry(value: string | undefined): boolean {
-  if (value === undefined || value.startsWith('-')) return true;
-  const clean = value.split(/[?#]/, 1)[0]?.toLowerCase() ?? '';
-  return clean.endsWith('.html') || clean.endsWith('.htm') || /[*?\[\]{}()]/.test(value);
-}
-
 /**
- * Commander 会把可选参数后的 index.html 当成档位。预处理只为省略的档位补 safe，
- * 让 `ssb --minify-html index.html` 仍把 index.html 留作入口；未知普通单词仍交给解析器报错。
+ * 只有下一个参数精确匹配合法等级时才交给 Commander 消费；否则裸开关统一补为 safe，
+ * 保留下一个参数作为 HTML 入口或 glob。显式等级推荐使用 `--minify=aggressive`。
  */
 export function normalizeOptionalLevels(argv: readonly string[]): string[] {
   const normalized = [...argv];
@@ -96,7 +92,7 @@ export function normalizeOptionalLevels(argv: readonly string[]): string[] {
       index += 1;
       continue;
     }
-    if (looksLikeHtmlEntry(next)) normalized[index] = `${argument}=safe`;
+    normalized[index] = `${argument}=safe`;
   }
   return normalized;
 }
@@ -107,6 +103,7 @@ function hasLongOption(args: readonly string[], name: string): boolean {
 
 function validateCliArguments(args: readonly string[]): void {
   const conflicts: Array<[string, string]> = [
+    ['--optimize', '--no-optimize'],
     ['--minify', '--no-minify'],
     ['--minify-html', '--no-minify-html'],
     ['--minify-js', '--no-minify-js'],
@@ -141,8 +138,16 @@ export function createBuildOptions(entries: readonly string[], options: CliOptio
   if (Array.isArray(options.transform)) result.transformExclude = options.transform;
   if (options.dryRun) result.dryRun = true;
 
+  const hasOptimize = hasLongOption(args, '--optimize') || hasLongOption(args, '--no-optimize');
+  const optimizeLevel: CompressionLevel | undefined = hasOptimize
+    ? options.optimize === false
+      ? 'none'
+      : options.optimize ?? 'safe'
+    : undefined;
+
   const minify: MinifyOptions = {};
-  let hasMinify = false;
+  let hasMinify = optimizeLevel !== undefined;
+  if (optimizeLevel !== undefined) minify.level = optimizeLevel;
   if (hasLongOption(args, '--minify') || hasLongOption(args, '--no-minify')) {
     minify.level = options.minify === false ? 'none' : options.minify ?? 'safe';
     hasMinify = true;
@@ -166,8 +171,9 @@ export function createBuildOptions(entries: readonly string[], options: CliOptio
   }
 
   const hasObfuscate = hasLongOption(args, '--obfuscate') || hasLongOption(args, '--no-obfuscate');
-  if (hasObfuscate || (options.keepName !== undefined && options.keepName.length > 0)) {
+  if (hasOptimize || hasObfuscate || (options.keepName !== undefined && options.keepName.length > 0)) {
     const obfuscate: ObfuscateOptions = {};
+    if (optimizeLevel !== undefined) obfuscate.level = optimizeLevel;
     if (hasObfuscate) {
       obfuscate.level = options.obfuscate === false ? 'none' : options.obfuscate ?? 'safe';
     }
@@ -180,7 +186,7 @@ export function createBuildOptions(entries: readonly string[], options: CliOptio
 async function createDefaultConfigSnapshot(): Promise<Record<string, unknown>> {
   const defaults = await loadConfig({ configFile: false });
   return {
-    root: '.', entries: [], outDir: './dist', include: defaults.include, exclude: defaults.exclude,
+    root: '.', entries: [], outDir: './dist', exclude: defaults.exclude, include: defaults.include,
     transformExclude: defaults.transformExclude, minify: defaults.minify, obfuscate: defaults.obfuscate,
     transpile: defaults.transpile,
   };
@@ -210,31 +216,33 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     .option('-r, --root <dir>', '源码根目录（默认：当前目录）')
     .option('-e, --entry <file-or-glob>', '添加 HTML 入口，可重复使用', collectNonEmpty)
     .option('-c, --config <file>', '指定 ssb.config.* 文件（默认：自动发现）')
-    .option('--no-config', '禁用配置文件自动发现')
+    .option('--no-config', '禁用配置文件自动发现和加载（默认：启用）')
     .optionsGroup('输出选项：')
     .option('-o, --out-dir <dir>', '输出目录（默认：<root>/dist）')
     .optionsGroup('代码处理选项：')
-    .option('--minify [level]', '设置全部压缩档位：none、safe、aggressive（省略档位：safe）', parseCompressionLevel)
-    .option('--no-minify', '禁用全部压缩')
-    .option('--minify-html [level]', '设置 HTML 压缩档位（省略档位：safe）', parseCompressionLevel)
+    .option('--optimize [level]', '同时设置压缩和混淆等级（省略：safe）', parseCompressionLevel)
+    .option('--no-optimize', '同时禁用压缩和混淆，等价于 --optimize=none')
+    .option('--minify [level]', '设置全部压缩等级：none、safe、aggressive（省略：safe）', parseCompressionLevel)
+    .option('--no-minify', '禁用全部压缩，等价于 --minify=none')
+    .option('--minify-html [level]', '设置 HTML 压缩等级（省略：safe）', parseCompressionLevel)
     .option('--no-minify-html', '禁用 HTML 压缩')
-    .option('--minify-js [level]', '设置 JavaScript 压缩档位（省略档位：safe）', parseCompressionLevel)
+    .option('--minify-js [level]', '设置 JavaScript 压缩等级（省略：safe）', parseCompressionLevel)
     .option('--no-minify-js', '禁用 JavaScript 压缩')
-    .option('--minify-css [level]', '设置 CSS 压缩档位（省略档位：safe）', parseCompressionLevel)
+    .option('--minify-css [level]', '设置 CSS 压缩等级（省略：safe）', parseCompressionLevel)
     .option('--no-minify-css', '禁用 CSS 压缩')
+    .option('--obfuscate [level]', '设置 JS 混淆等级：none、safe、aggressive（省略：safe；默认：none）', parseObfuscationLevel)
+    .option('--no-obfuscate', '禁用 JavaScript 混淆，等价于 --obfuscate=none')
     .option('--target <target>', 'JavaScript 输出目标：modern 或 es5（默认：modern）', parseJavaScriptTarget)
-    .option('--obfuscate [level]', '启用 JS 混淆：safe 或 aggressive（省略档位：safe）', parseObfuscationLevel)
-    .option('--no-obfuscate', '禁用 JavaScript 混淆')
-    .option('--keep-name <name>', '保留标识符名称，可重复使用', collectNonEmpty)
+    .option('--keep-name <name>', '混淆时保留标识符名称，可重复使用', collectNonEmpty)
     .optionsGroup('资源选择选项：')
-    .option('--include <glob>', '强制包含动态资源，可重复使用', collectNonEmpty)
-    .option('--exclude <glob>', '完全排除资源，可重复使用', collectNonEmpty)
-    .option('--no-transform <glob>', '包含文件但不转译、压缩或混淆，可重复使用', collectNonEmpty)
+    .option('--exclude <glob>', '从站点包中完全排除文件，可重复使用（默认：无）', collectNonEmpty)
+    .option('--include <glob>', '强制加入静态分析无法发现的资源，可重复使用（默认：无）', collectNonEmpty)
+    .option('--no-transform <glob>', '打包文件但保持内容不变，可重复使用（默认：无）', collectNonEmpty)
     .optionsGroup('报告选项：')
-    .option('--dry-run', '完整预演，但不写入输出目录')
-    .option('--list-files', '显示最终包含的文件')
-    .option('--json', '以 JSON 输出构建结果')
-    .option('--quiet', '成功时不输出信息')
+    .option('--dry-run', '完整预演构建但不写入文件（默认：关闭）')
+    .option('--list-files', '输出最终打包文件列表（默认：关闭）')
+    .option('--quiet', '成功时不输出任何内容（默认：关闭）')
+    .option('--json', '以 JSON 输出构建结果（默认：可读文本）')
     .configureOutput({ writeOut: write, writeErr: () => undefined })
     .exitOverride()
     .allowExcessArguments(false);

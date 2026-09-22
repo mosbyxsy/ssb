@@ -30,7 +30,7 @@ export interface SsbConfig {
   transformExclude?: string[];
   minify?: CompressionLevel | MinifyOptions;
   obfuscate?: ObfuscationLevel | ObfuscateOptions;
-  transpile?: TranspileOptions;
+  transpile?: JavaScriptTarget | TranspileOptions;
 }
 
 export interface BuildOptions extends SsbConfig {
